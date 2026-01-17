@@ -1,0 +1,964 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kalman Filter (C_model Notation)</title>
+    
+    <script>
+    window.MathJax = {
+      tex: {
+        inlineMath: [['$', '$'], ['\\(', '\\)']]
+      },
+      svg: {
+        fontCache: 'global'
+      }
+    };
+    </script>
+    
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/11.8.0/math.min.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.24.1.min.js"></script>
+
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; margin: 0; padding: 0; background: #f8f9fa; display: flex; flex-direction: column; height: 100vh; overflow: hidden; color: #333; }
+        
+        .main-container { display: flex; flex: 1; position: relative; overflow: hidden; }
+        #plotDiv { flex: 1; height: 100%; }
+
+        /* Panel Styling */
+        .panel {
+            position: absolute; top: 10px; right: 10px; width: 380px;
+            background: rgba(255, 255, 255, 0.98);
+            backdrop-filter: blur(12px);
+            border: 1px solid #e2e8f0; border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.15);
+            display: flex; flex-direction: column;
+            z-index: 30; font-size: 13px;
+            max-height: 95vh; overflow-y: auto;
+        }
+
+        .panel-controls {
+            padding: 20px;
+            background: #f8fafc;
+            border-bottom: 1px solid #e2e8f0;
+            border-radius: 12px 12px 0 0;
+        }
+
+        .control-header {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .control-title { 
+            font-weight: 800; color: #2d3748; font-size: 14px; 
+            text-transform: uppercase; letter-spacing: 1px; 
+        }
+
+        .button-group { display: flex; gap: 8px; }
+
+        .btn-reset {
+            background: #fff; border: 1px solid #cbd5e0; padding: 4px 10px; border-radius: 4px; cursor: pointer;
+            font-size: 11px; font-weight: 600; color: #4a5568; transition: all 0.2s;
+        }
+        .btn-reset:hover { background: #e2e8f0; color: #2d3748; }
+        
+        .param-group { margin-bottom: 15px; }
+        .param-group label { display: block; font-size: 13px; font-weight: 700; color: #4a5568; margin-bottom: 8px; }
+        
+        .slider-row { display: flex; align-items: center; gap: 12px; }
+        input[type=range] { 
+            flex-grow: 1; cursor: pointer; height: 6px; 
+            background: #cbd5e0; border-radius: 5px; appearance: none; 
+        }
+        input[type=range]::-webkit-slider-thumb { 
+            appearance: none; width: 18px; height: 18px; 
+            background: #3182ce; border-radius: 50%; cursor: pointer; 
+            border: 2px solid #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.3); 
+        }
+        .val-disp { font-family: 'Consolas', monospace; color: #3182ce; font-weight: bold; width: 40px; text-align: right; font-size: 14px;}
+
+        /* Analysis Section */
+        .panel-analysis { padding: 20px; }
+        
+        .formula-block {
+            background: #fff; border-radius: 8px; padding: 12px; margin-bottom: 8px;
+            text-align: center; border: 1px solid #edf2f7;
+            font-size: 1.25em; color: #1a202c;
+            box-shadow: inset 0 1px 2px rgba(0,0,0,0.02);
+        }
+
+        .section-header {
+            font-weight: 800; color: #2b6cb0; margin-top: 15px; margin-bottom: 8px; font-size: 12px;
+            border-left: 3px solid #3182ce; padding-left: 8px;
+        }
+
+        .math-row { display: flex; justify-content: space-between; margin-bottom: 5px; border-bottom: 1px dashed #edf2f7; padding-bottom: 2px;}
+        .math-label { color: #64748b; font-weight: 600; font-size: 1.1em; font-family: 'Times New Roman', serif; font-style: italic;}
+        .math-val { font-family: 'Consolas', monospace; color: #2d3748; font-weight: 700; font-size: 14px; }
+        
+        .highlight-k { color: #e53e3e; } 
+        .highlight-p { color: #d69e2e; }
+        .highlight-x { color: #38a169; }
+    </style>
+</head>
+<body>
+
+<div class="main-container">
+    <div id="plotDiv"></div>
+
+    <div class="panel">
+        <div class="panel-controls">
+            <div class="control-header">
+                <span class="control-title">PARAMETERS</span>
+                <div class="button-group">
+                    <button class="btn-reset" onclick="resetParams()">Reset Params</button>
+                    <button class="btn-reset" onclick="resetZoom()">Reset Zoom</button>
+                </div>
+            </div>
+
+            <div class="param-group">
+                <label>Obs. Noise ($C_{obs}$)</label>
+                <div class="slider-row">
+                    <input type="range" id="sigmaObs" min="1" max="100" value="25" step="1" oninput="updateAll(this.value, 'Obs')">
+                    <span class="val-disp" id="valObs">25</span>
+                </div>
+            </div>
+
+            <div class="param-group">
+                <label>Model Covariance ($C_{model}$)</label>
+                <div class="slider-row">
+                    <input type="range" id="sigmaModel" min="0.1" max="10.0" value="1.0" step="0.1" oninput="updateAll(this.value, 'Model')">
+                    <span class="val-disp" id="valModel">1.0</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="panel-analysis">
+            <div class="math-row" style="margin-bottom: 10px; border: none;">
+                <span style="font-weight: bold; color: #333; font-style: normal;">Current Step (t):</span>
+                <span class="math-val" id="disp-t" style="color: #3182ce;">0</span>
+            </div>
+
+            <div class="section-header">1. WEIGHT ($K$)</div>
+            <div class="formula-block">
+                $$ K = \frac{P}{P + C_{obs}} $$
+            </div>
+            <div class="math-row">
+                <span class="math-label">K (Ratio):</span>
+                <span class="math-val highlight-k" id="disp-k">0.0000</span>
+            </div>
+
+            <div class="section-header">2. UPDATE POSITION ($X_{new}$)</div>
+            <div class="formula-block">
+                $$ X_{new} = X_{est} + K(X_{obs} - X_{est}) $$
+            </div>
+            <div class="math-row">
+                <span class="math-label">\(X_{est}\) (Predict):</span>
+                <span class="math-val highlight-x" id="disp-x-est">0.00</span>
+            </div>
+            <div class="math-row">
+                <span class="math-label">\(X_{obs}\) (Sensor):</span>
+                <span class="math-val" id="disp-z" style="color:#666">0.00</span>
+            </div>
+            <div class="math-row" style="border-top: 1px solid #ddd; border-bottom:none; margin-top:2px; padding-top:4px;">
+                <span class="math-label" style="font-weight:bold; color:#38a169;">\(X_{new}\) (Result):</span>
+                <span class="math-val highlight-x" id="disp-x-new">0.00</span>
+            </div>
+
+            <div class="section-header">3. UPDATE UNCERTAINTY ($P$)</div>
+            <div class="formula-block">
+                $$ P_{new} = (1 - K) P $$
+            </div>
+            <div class="math-row">
+                <span class="math-label">\(P\) (Prior):</span>
+                <span class="math-val" id="disp-p-est" style="color:#aaa">0.00</span>
+            </div>
+            <div class="math-row">
+                <span class="math-label" style="font-weight:bold; color:#d69e2e;">\(P_{new}\) (Post):</span>
+                <span class="math-val highlight-p" id="disp-p-new">0.00</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // ============================================================
+    // DATA INPUT AREA
+    // ============================================================
+    const rawDataInput = `
+1	200.68	500.29	200.13
+2	202.08	501.01	200.02
+3	202.84	501.27	200.00
+4	204.14	502.15	200.02
+5	204.92	502.40	199.97
+6	206.17	502.96	200.05
+7	207.05	503.18	199.92
+8	208.14	503.68	199.98
+9	208.66	505.14	199.99
+10	210.27	505.46	200.09
+11	211.13	505.45	200.02
+12	211.89	506.10	199.95
+13	213.28	506.29	200.07
+14	213.77	506.84	199.88
+15	215.07	507.30	199.97
+16	215.91	508.30	200.05
+17	216.88	508.46	200.07
+18	217.76	508.79	200.08
+19	219.14	509.83	199.93
+20	220.20	509.91	200.02
+21	221.05	510.52	199.96
+22	222.07	510.74	200.09
+23	222.85	511.81	200.03
+24	224.05	512.16	200.01
+25	224.76	512.74	199.97
+26	225.71	513.10	199.98
+27	227.31	513.73	200.00
+28	227.88	513.99	200.00
+29	229.22	514.57	200.05
+30	230.23	515.24	199.97
+31	231.02	515.49	199.89
+32	232.39	515.95	200.01
+33	232.96	516.79	200.23
+34	233.95	516.58	200.02
+35	235.12	517.41	199.97
+36	236.30	518.33	200.01
+37	236.77	518.84	199.96
+38	238.05	519.29	199.96
+39	238.56	519.67	200.03
+40	239.87	519.87	199.89
+41	240.87	520.45	200.19
+42	241.60	521.30	200.00
+43	243.28	521.30	199.95
+44	243.58	522.43	200.04
+45	245.14	522.72	199.97
+46	245.62	523.13	199.98
+47	247.19	523.75	199.98
+48	247.90	524.31	200.00
+49	249.36	524.48	199.98
+50	249.71	525.07	200.03
+51	251.32	525.34	199.89
+52	251.91	525.96	200.13
+53	253.24	526.61	200.00
+54	254.25	526.76	200.01
+55	255.08	527.28	199.98
+56	256.17	527.56	200.03
+57	256.98	527.93	199.98
+58	258.20	529.24	199.89
+59	258.60	529.28	199.97
+60	259.87	529.46	200.05
+61	261.14	530.67	199.90
+62	262.62	531.38	200.18
+63	262.66	531.59	199.98
+64	264.51	531.81	200.06
+65	264.99	532.44	199.93
+66	266.23	533.14	199.99
+67	267.06	533.49	200.03
+68	268.40	534.07	199.91
+69	268.92	534.67	200.08
+70	270.02	535.05	199.98
+71	270.94	535.87	200.22
+72	272.16	536.05	199.97
+73	272.80	536.11	200.03
+74	274.11	536.90	199.85
+75	274.77	537.40	199.99
+76	275.92	538.05	200.12
+77	277.01	538.22	200.03
+78	278.16	539.04	199.98
+79	279.03	539.56	200.08
+80	280.49	540.19	200.00
+81	280.94	540.46	200.05
+82	281.77	540.93	199.95
+83	282.94	541.65	200.05
+84	283.79	542.38	200.07
+85	285.12	542.49	200.00
+86	285.74	543.37	199.94
+87	286.45	543.41	199.97
+88	287.73	544.37	200.01
+89	289.00	545.00	200.00
+90	290.28	545.31	200.05
+91	291.00	545.58	199.93
+92	291.86	546.08	199.87
+93	293.28	546.44	200.11
+94	294.06	546.91	200.08
+95	295.73	547.83	200.20
+96	295.76	548.07	200.02
+97	296.71	548.26	200.06
+98	297.62	549.17	200.11
+99	298.79	549.56	200.06
+100	300.23	550.10	199.94
+101	300.92	550.54	200.13
+102	301.50	551.25	200.09
+103	302.87	551.63	199.97
+104	304.33	551.85	199.84
+105	305.16	552.43	200.06
+106	306.14	552.96	199.86
+107	307.30	553.40	200.02
+108	308.25	553.83	199.94
+109	309.53	554.56	200.12
+110	310.04	554.73	200.06
+111	310.93	555.81	200.01
+112	312.26	556.70	200.06
+113	312.99	556.30	200.17
+114	313.85	557.03	199.95
+115	315.39	557.98	199.98
+116	315.76	557.79	200.08
+117	317.31	558.31	200.10
+118	317.98	559.05	200.03
+119	319.04	559.40	200.02
+120	320.25	560.16	200.00
+121	320.56	560.23	200.00
+122	321.72	560.80	200.07
+123	323.21	561.50	199.96
+124	323.93	562.56	199.98
+125	325.22	562.74	199.89
+126	325.85	563.20	200.10
+127	326.78	564.02	200.06
+128	327.87	564.09	200.06
+129	328.90	564.41	200.02
+130	330.29	565.15	199.99
+131	331.13	565.33	199.97
+132	332.20	565.96	200.04
+133	332.55	566.65	199.95
+134	333.71	567.14	199.89
+135	334.32	567.40	200.04
+136	335.87	568.07	200.02
+137	337.33	568.92	200.08
+138	338.07	569.11	200.09
+139	338.96	569.38	200.11
+140	339.08	570.00	200.01
+141	341.20	570.59	199.90
+142	342.19	571.04	200.01
+143	343.71	571.16	200.11
+144	344.33	572.68	200.07
+145	345.00	572.48	200.02
+146	346.42	573.22	199.94
+147	346.64	573.74	199.88
+148	347.65	573.87	199.94
+149	348.91	574.13	200.04
+150	350.02	574.76	199.96
+151	350.98	575.52	200.02
+152	351.76	575.88	200.06
+153	352.80	576.84	200.05
+154	354.23	576.93	200.02
+155	354.69	577.72	199.93
+156	355.88	577.74	200.02
+157	356.49	578.20	199.97
+158	358.08	578.88	199.98
+159	358.76	579.60	200.02
+160	360.26	579.93	199.96
+161	360.84	580.67	199.96
+162	362.12	581.18	199.97
+163	362.69	581.35	199.86
+164	363.87	581.91	199.79
+165	364.86	582.38	200.07
+166	366.32	582.96	199.92
+167	367.05	583.64	200.06
+168	367.75	584.00	200.11
+169	369.07	584.41	199.88
+170	369.97	584.80	200.06
+171	370.75	584.97	199.91
+172	372.30	586.01	200.14
+173	372.88	586.28	200.14
+174	374.39	587.12	200.02
+175	374.97	587.70	200.09
+176	376.17	587.98	200.04
+177	376.72	587.92	200.04
+178	378.09	589.22	199.98
+179	379.07	588.93	199.99
+180	380.58	589.87	200.04
+181	380.52	590.12	200.07
+182	381.99	591.28	200.09
+183	382.68	591.45	200.08
+184	384.48	591.99	199.93
+185	385.12	592.86	199.99
+186	385.43	593.17	199.98
+187	386.95	593.73	199.93
+188	388.22	594.01	199.95
+189	388.63	594.66	199.93
+190	389.77	595.00	200.04
+191	391.30	595.79	199.88
+192	391.55	595.74	199.86
+193	392.87	597.02	200.04
+194	394.45	597.08	199.92
+195	395.34	597.71	199.96
+196	395.86	598.05	199.88
+197	397.26	598.72	200.01
+198	397.96	599.01	199.96
+199	398.84	599.73	200.09
+200	399.64	599.95	200.04
+201	401.10	600.45	200.07
+202	402.17	600.81	199.91
+203	402.83	601.68	199.97
+204	404.08	601.88	199.97
+205	404.93	602.52	200.07
+206	406.07	602.64	199.97
+207	407.40	603.23	200.06
+208	408.21	604.01	199.93
+209	409.70	604.33	200.09
+210	410.35	605.01	199.90
+211	410.85	605.34	200.09
+212	412.00	606.45	200.02
+213	412.94	606.79	199.94
+214	414.25	607.55	200.00
+215	415.08	607.83	199.96
+216	416.32	608.32	200.11
+217	417.62	608.89	200.04
+218	418.25	608.71	199.97
+219	419.06	610.01	200.04
+220	420.19	610.08	199.98
+221	420.89	610.83	199.95
+222	422.06	611.08	200.10
+223	423.05	611.41	200.00
+224	423.74	611.83	200.09
+225	424.68	612.38	200.06
+226	425.91	612.82	200.03
+227	427.36	613.49	200.05
+228	427.87	614.17	200.06
+229	428.70	614.72	199.96
+230	429.75	615.43	199.97
+231	430.81	615.51	200.01
+232	432.30	615.62	199.97
+233	433.09	616.68	200.08
+234	434.21	617.04	199.84
+235	434.71	617.20	200.03
+236	435.90	617.76	200.08
+237	437.15	618.64	200.13
+238	438.00	618.73	199.94
+239	439.12	619.46	200.05
+240	440.26	619.86	200.00
+241	441.23	620.14	199.97
+242	442.52	620.34	199.93
+243	442.92	621.49	199.86
+244	444.21	622.01	200.07
+245	445.32	622.41	200.06
+246	446.08	622.95	199.92
+247	447.07	624.16	200.11
+248	448.21	623.90	200.02
+249	448.72	624.80	199.97
+250	449.77	625.39	199.98
+251	450.80	625.71	200.01
+252	451.56	625.72	200.04
+253	453.12	626.99	199.99
+254	454.07	627.06	200.06
+255	455.09	627.17	200.05
+256	456.37	628.04	199.90
+257	457.02	628.33	199.86
+258	458.03	629.12	200.07
+259	459.03	629.26	200.05
+260	460.28	630.29	200.00
+261	461.31	630.03	200.14
+262	462.42	631.11	199.91
+263	463.19	631.63	200.05
+264	464.42	631.34	199.94
+265	464.84	632.60	199.99
+266	466.40	633.30	200.06
+267	466.79	633.17	199.92
+268	468.34	634.12	200.05
+269	469.27	634.73	199.96
+270	469.88	634.99	200.06
+271	470.80	635.38	199.99
+272	471.96	635.42	199.85
+273	472.91	636.59	200.08
+274	474.03	637.11	200.15
+275	474.83	637.33	199.96
+276	476.41	637.84	200.13
+277	476.78	638.28	200.05
+278	477.92	638.97	200.18
+279	479.31	639.62	200.07
+280	480.21	640.00	200.04
+281	481.34	640.31	199.98
+282	481.56	641.19	200.05
+283	483.02	641.46	200.10
+284	484.12	641.73	200.03
+285	485.32	642.34	200.05
+286	486.17	643.18	199.85
+287	486.95	643.54	199.88
+288	488.30	644.13	199.84
+289	489.40	644.28	199.98
+290	490.47	645.34	199.92
+291	491.04	645.22	200.04
+292	492.05	645.49	199.96
+293	493.48	646.54	199.94
+294	493.69	646.92	200.05
+295	495.05	647.53	199.96
+296	496.02	647.93	199.93
+297	497.34	648.53	200.07
+298	497.90	649.01	199.98
+299	498.94	649.26	200.02
+300	499.90	650.32	199.96
+301	500.77	650.46	200.00
+302	502.31	651.15	199.83
+303	502.95	651.57	199.92
+304	503.41	651.85	200.14
+305	504.57	652.19	199.92
+306	505.68	653.15	200.00
+307	506.82	653.35	200.05
+308	507.77	654.46	200.06
+309	508.66	654.02	199.96
+310	510.01	654.67	199.94
+311	510.46	655.30	199.88
+312	512.24	655.68	200.08
+313	513.04	656.50	200.03
+314	513.74	657.17	199.91
+315	515.12	657.94	199.81
+316	516.19	657.56	199.97
+317	516.74	658.38	200.01
+318	517.82	659.46	199.90
+319	518.88	659.13	200.00
+320	520.01	659.78	200.13
+321	520.79	660.19	199.98
+322	521.79	661.26	200.11
+323	522.52	661.57	199.96
+324	523.98	661.73	200.06
+325	524.88	662.53	199.98
+326	525.94	663.22	199.96
+327	526.51	663.89	199.99
+328	527.94	664.12	199.96
+329	529.39	664.73	199.96
+330	529.84	665.44	200.03
+331	531.23	665.80	200.01
+332	531.49	665.77	200.09
+333	533.25	666.50	199.91
+334	534.40	667.28	199.94
+335	534.82	667.44	199.95
+336	536.10	667.78	199.90
+337	537.07	668.27	200.02
+338	538.68	669.18	199.97
+339	539.37	669.62	199.94
+340	539.76	669.92	200.10
+341	540.88	670.72	200.04
+342	542.16	671.31	200.10
+343	542.96	670.93	200.01
+344	543.50	672.18	199.97
+345	545.16	672.61	200.02
+346	546.33	673.28	200.10
+347	547.41	673.19	200.10
+348	548.12	674.28	199.98
+349	548.82	675.05	200.00
+350	550.11	674.97	199.89
+351	550.95	675.55	199.95
+352	551.94	676.29	199.92
+353	552.63	676.62	199.95
+354	554.02	676.85	199.99
+355	555.19	677.43	200.06
+356	555.92	678.17	199.87
+357	556.96	678.21	199.99
+358	557.73	678.69	199.99
+359	558.65	679.66	200.05
+360	560.21	679.96	199.93
+361	561.05	680.24	199.94
+362	562.25	680.72	200.02
+363	563.07	681.81	200.07
+364	564.08	681.81	200.05
+365	564.83	682.40	200.13
+366	565.90	682.97	199.97
+367	567.24	683.33	199.94
+368	567.31	684.08	200.18
+369	569.06	684.57	199.96
+370	569.72	685.14	199.96
+371	571.11	685.67	199.98
+372	572.21	686.31	200.07
+373	573.00	686.83	199.99
+374	573.75	687.04	200.06
+375	575.26	686.93	199.91
+376	576.37	687.68	199.91
+377	577.18	688.66	199.96
+378	577.91	689.28	200.03
+379	579.10	689.10	199.83
+380	580.05	690.17	199.75
+381	580.99	690.70	200.00
+382	581.95	690.86	199.90
+383	582.75	691.92	200.12
+384	583.35	691.94	200.05
+385	584.63	691.85	199.96
+386	586.12	693.26	199.89
+387	587.47	693.56	200.01
+388	588.23	693.83	199.97
+389	589.08	694.37	200.18
+390	590.11	694.93	200.00
+391	590.91	695.01	200.02
+392	591.64	696.28	200.13
+393	592.73	696.56	200.08
+394	594.27	697.19	199.95
+395	594.87	697.58	200.02
+396	596.16	698.14	200.00
+397	596.72	698.10	199.87
+398	597.80	698.87	200.06
+399	598.80	699.57	199.98
+400	600.30	700.11	199.99
+401	600.67	701.11	199.87
+402	601.92	701.09	199.87
+403	602.73	701.37	199.98
+404	604.04	701.96	199.96
+405	605.04	702.78	200.13
+406	606.00	703.17	200.12
+407	606.65	703.56	199.90
+408	607.92	704.00	199.88
+409	609.09	704.50	200.00
+410	610.09	704.89	199.99
+411	611.47	705.22	199.91
+412	612.14	705.94	200.01
+413	612.67	706.42	199.99
+414	613.74	706.89	200.13
+415	615.38	707.16	199.96
+416	615.62	707.90	199.96
+417	616.61	708.47	199.97
+418	617.87	709.76	199.98
+419	619.17	709.73	200.01
+420	619.77	710.28	199.94
+421	620.66	710.58	200.02
+422	621.90	711.01	199.98
+423	623.14	711.40	200.04
+424	623.50	711.86	199.99
+425	625.13	712.22	200.08
+426	625.60	713.29	199.98
+427	627.41	713.42	200.16
+428	627.72	713.73	200.13
+429	628.72	714.51	200.05
+430	630.04	714.99	199.93
+431	630.92	715.27	199.89
+432	632.17	715.99	199.99
+433	633.17	716.02	199.97
+434	634.50	716.88	200.05
+435	634.95	717.60	200.02
+436	635.59	718.27	200.09
+437	637.49	718.44	200.15
+438	637.92	719.40	200.05
+439	638.96	719.47	199.99
+440	640.05	719.81	199.87
+441	641.57	720.61	199.92
+442	642.50	721.05	199.91
+443	642.78	721.67	199.95
+444	643.74	721.78	199.97
+445	644.71	722.47	200.06
+446	646.34	722.83	199.97
+447	646.56	723.43	200.03
+448	647.66	723.64	199.95
+449	649.01	724.66	200.04
+450	650.15	724.99	199.94
+451	650.70	725.58	199.86
+452	651.71	725.73	200.00
+453	652.93	726.57	200.04
+454	653.95	726.89	200.00
+455	654.92	728.03	199.94
+456	656.41	728.23	199.98
+457	657.00	728.71	199.96
+458	658.17	728.95	200.02
+459	659.04	729.64	200.00
+460	659.86	730.00	199.90
+461	660.62	730.25	199.95
+462	662.11	731.32	200.13
+463	662.56	731.33	199.97
+464	664.10	731.53	199.97
+465	665.27	732.34	199.93
+466	666.30	732.97	199.96
+467	666.88	733.47	200.11
+468	667.92	733.56	200.14
+469	669.48	734.51	200.04
+470	669.87	735.27	199.93
+471	671.45	735.33	199.92
+472	671.84	735.94	199.92
+473	673.31	736.56	200.07
+474	674.08	736.37	199.94
+475	674.71	738.12	200.06
+476	675.33	738.02	200.03
+477	676.98	738.58	200.06
+478	678.23	738.91	200.07
+479	678.88	739.78	199.88
+480	679.99	739.80	200.01
+481	680.93	740.30	200.15
+482	681.77	740.98	199.89
+483	683.11	741.65	200.05
+484	684.22	741.54	200.11
+485	684.91	742.68	200.08
+486	685.65	742.86	200.18
+487	687.32	743.32	200.04
+488	688.17	743.83	199.92
+489	688.97	744.91	200.06
+490	689.65	744.93	200.06
+491	690.84	745.74	199.95
+492	691.68	745.63	200.01
+493	692.79	746.38	199.95
+494	694.25	747.02	199.98
+495	695.20	747.51	199.92
+496	696.04	748.35	200.07
+497	697.11	748.09	199.95
+498	698.05	749.28	199.94
+499	698.82	749.33	199.91
+500	699.98	749.77	199.93
+501	700.88	750.07	200.02
+502	702.17	751.11	200.03
+503	703.18	751.62	200.02
+504	703.84	752.25	200.10
+505	704.96	752.62	199.94
+506	705.96	752.87	200.05
+507	706.97	753.57	199.98
+508	707.90	753.87	200.02
+509	709.30	754.95	199.97
+510	709.92	755.69	200.01
+511	711.49	755.27	200.01
+512	712.00	756.26	199.83
+513	713.03	756.61	200.06
+514	714.13	757.35	199.99
+515	715.36	757.15	199.98
+516	715.88	758.50	199.99
+517	716.95	758.58	200.01
+518	718.31	759.15	200.05
+519	719.09	759.53	199.91
+520	719.72	759.93	200.09
+521	721.06	760.53	199.81
+522	722.34	761.56	200.04
+523	723.16	761.32	199.95
+524	724.13	761.61	200.06
+525	724.95	762.72	199.95
+526	726.20	762.68	200.04
+527	727.07	763.55	199.99
+528	727.79	763.57	200.07
+529	729.09	764.60	200.06
+530	729.87	764.57	200.12
+531	730.99	765.38	200.00
+532	732.10	766.22	199.97
+533	733.15	766.23	199.86
+534	734.02	766.67	200.09
+535	734.80	767.51	200.08
+536	736.04	768.21	200.15
+537	736.88	768.60	199.95
+538	737.85	768.57	199.98
+539	739.15	769.74	199.94
+540	740.06	770.09	200.07
+541	740.75	770.27	199.95
+542	742.35	770.92	200.08
+543	743.01	771.39	199.89
+544	743.93	771.70	200.06
+545	744.43	772.22	200.03
+546	745.78	772.87	199.96
+547	747.04	773.71	199.88
+548	747.81	773.77	199.96
+549	749.03	774.38	200.19
+550	750.52	774.91	199.90
+551	750.76	775.32	199.94
+552	752.07	775.65	200.08
+553	752.81	776.78	200.03
+554	754.51	776.99	199.95
+555	755.11	777.95	200.05
+556	756.01	778.04	200.01
+557	757.57	778.67	199.96
+558	757.90	779.31	200.01
+559	759.21	779.54	199.96
+560	759.99	780.12	200.00
+561	761.20	780.43	199.98
+562	761.92	780.76	200.04
+563	762.98	781.45	199.96
+564	763.98	781.99	200.09
+565	765.06	782.39	200.04
+566	766.15	782.88	200.02
+567	766.73	784.02	199.99
+568	768.07	784.22	200.17
+569	768.88	784.48	200.00
+570	770.05	784.65	200.06
+571	771.08	785.49	200.01
+572	772.10	786.41	200.08
+573	772.72	786.76	199.92
+574	773.66	786.89	199.97
+575	774.95	787.80	199.91
+576	775.89	788.00	200.06
+577	777.18	788.37	200.04
+578	777.66	789.12	199.98
+579	779.20	789.21	199.90
+580	779.77	789.92	199.91
+581	781.28	790.46	199.93
+582	781.89	791.47	200.02
+583	782.89	791.60	199.83
+584	783.73	791.72	200.10
+585	784.88	792.91	200.03
+586	785.84	792.76	200.05
+587	786.80	793.12	200.03
+588	787.87	794.39	200.00
+589	788.78	794.43	199.88
+590	789.58	794.65	200.03
+591	790.86	795.64	199.90
+592	792.66	795.88	200.03
+593	793.15	796.75	200.15
+594	793.98	797.21	199.94
+595	794.79	797.59	200.03
+596	795.95	798.32	199.96
+597	796.43	798.52	199.96
+598	797.75	798.78	200.24
+599	799.02	799.90	199.94
+600	799.36	799.76	199.89
+
+`;
+    // ============================================================
+
+    let rawData = [];
+    let historyLog = []; 
+    const dt = 1.0;
+    
+    let isUserZoomed = false;
+    let currentStepIndex = 0; 
+    
+    const DEFAULT_SIGMA_OBS = 25;
+    const DEFAULT_SIGMA_MODEL = 1.0;
+
+    window.onload = function() {
+        parseDataString(rawDataInput);
+    };
+
+    function parseDataString(text) {
+        rawData = [];
+        const lines = text.trim().split('\n');
+        lines.forEach(line => {
+            line = line.trim();
+            if(!line || line.startsWith('PASTE') || line.startsWith('(Format')) return; 
+            const parts = line.split(/\s+/);
+            if (parts.length >= 3) {
+                const x = parseFloat(parts[1]);
+                const y = parseFloat(parts[2]);
+                if (!isNaN(x) && !isNaN(y)) rawData.push([x, y]);
+            }
+        });
+
+        if (rawData.length > 0) {
+            runKalman();
+            setupInteractions();
+        }
+    }
+
+    function setupInteractions() {
+        const plotDiv = document.getElementById('plotDiv');
+        
+        plotDiv.on('plotly_relayout', function(eventdata){
+            if (eventdata['xaxis.range[0]'] || eventdata['xaxis.range']) isUserZoomed = true;
+            if (eventdata['xaxis.autorange'] === true) isUserZoomed = false;
+        });
+
+        plotDiv.on('plotly_hover', function(data){
+            const pointIndex = data.points[0].pointNumber;
+            currentStepIndex = pointIndex; 
+            refreshPanel(); 
+        });
+    }
+
+    function resetParams() {
+        const sliderObs = document.getElementById('sigmaObs');
+        const sliderModel = document.getElementById('sigmaModel');
+        sliderObs.value = DEFAULT_SIGMA_OBS;
+        sliderModel.value = DEFAULT_SIGMA_MODEL;
+        document.getElementById('valObs').innerText = DEFAULT_SIGMA_OBS;
+        document.getElementById('valModel').innerText = DEFAULT_SIGMA_MODEL;
+        if (rawData.length > 0) { runKalman(); refreshPanel(); }
+    }
+
+    function updateAll(val, type) {
+        if(type) document.getElementById('val' + type).innerText = val;
+        if (rawData.length > 0) { runKalman(); refreshPanel(); }
+    }
+
+    function resetZoom() {
+        const plotDiv = document.getElementById('plotDiv');
+        isUserZoomed = false;
+        Plotly.relayout(plotDiv, { 'xaxis.autorange': true, 'yaxis.autorange': true });
+    }
+
+    function runKalman() {
+        const sigma_obs = parseFloat(document.getElementById('sigmaObs').value);
+        const sigma_model = parseFloat(document.getElementById('sigmaModel').value);
+
+        // Initial State
+        let x = math.matrix([[rawData[0][0]], [rawData[0][1]], [0], [0]]); 
+        
+        const T = math.matrix([[1, 0, dt, 0], [0, 1, 0, dt], [0, 0, 1, 0], [0, 0, 0, 1]]);
+        const A = math.matrix([[1, 0, 0, 0], [0, 1, 0, 0]]); 
+        
+        const sm2 = sigma_model * sigma_model;
+        const Q = math.diag([sm2, sm2, sm2, sm2]); // C_model
+        
+        const so2 = sigma_obs * sigma_obs;
+        const R = math.diag([so2, so2]); // C_obs
+        
+        let P = math.diag([100, 100, 1, 1]); // P (Covariance)
+
+        let kX = [], kY = [];
+        historyLog = []; 
+
+        for (let i = 0; i < rawData.length; i++) {
+            let z = math.matrix([[rawData[i][0]], [rawData[i][1]]]); 
+
+            // Predict
+            let x_pred = math.multiply(T, x);
+            let P_pred = math.add(math.multiply(math.multiply(T, P), math.transpose(T)), Q);
+            
+            let P_prior_val = P_pred.get([0,0]); 
+            let X_est_val = x_pred.get([0,0]);
+
+            // Update
+            let S = math.add(math.multiply(math.multiply(A, P_pred), math.transpose(A)), R);
+            let S_inv;
+            try { S_inv = math.inv(S); } catch(e) { S_inv = math.identity(2); }
+            
+            let K = math.multiply(math.multiply(P_pred, math.transpose(A)), S_inv);
+            
+            let innovation = math.subtract(z, math.multiply(A, x_pred));
+            x = math.add(x_pred, math.multiply(K, innovation));
+            
+            let I = math.identity(4);
+            P = math.multiply(math.subtract(I, math.multiply(K, A)), P_pred);
+
+            kX.push(x.get([0, 0]));
+            kY.push(x.get([1, 0]));
+
+            historyLog.push({
+                t: i + 1,
+                k: K.get([0, 0]), 
+                x_est: X_est_val,
+                p_est: P_prior_val,
+                z: rawData[i][0],
+                x_new: x.get([0, 0]),
+                p_new: P.get([0, 0])
+            });
+        }
+
+        drawPlot(kX, kY);
+    }
+
+    function drawPlot(kX, kY) {
+        const plotDiv = document.getElementById('plotDiv');
+        const traceObs = {
+            x: rawData.map(p => p[0]), y: rawData.map(p => p[1]),
+            mode: 'markers', name: 'Sensor (Obs)',
+            marker: { color: '#718096', size: 6, opacity: 0.5, line: {color: 'white', width: 0.5} } 
+        };
+        const traceKalman = {
+            x: kX, y: kY, mode: 'lines', name: 'Kalman (Est)',
+            line: { color: '#e53e3e', width: 3 } 
+        };
+        const baseLayout = {
+            autosize: true, margin: { l: 50, r: 20, t: 30, b: 40 },
+            xaxis: { title: 'X Position (m)', zeroline: false, showgrid: true, gridcolor: '#edf2f7' },
+            yaxis: { title: 'Y Position (m)', zeroline: false, showgrid: true, gridcolor: '#edf2f7' },
+            legend: { x: 0, y: 1, bgcolor: 'rgba(255,255,255,0.9)' },
+            hovermode: 'closest', paper_bgcolor: '#f8f9fa', plot_bgcolor: '#ffffff'
+        };
+        const finalLayout = Object.assign({}, baseLayout);
+        if (isUserZoomed && plotDiv.layout) {
+            if(plotDiv.layout.xaxis && plotDiv.layout.xaxis.range) finalLayout.xaxis.range = plotDiv.layout.xaxis.range;
+            if(plotDiv.layout.yaxis && plotDiv.layout.yaxis.range) finalLayout.yaxis.range = plotDiv.layout.yaxis.range;
+        }
+        Plotly.react('plotDiv', [traceObs, traceKalman], finalLayout, {responsive: true});
+    }
+
+    function refreshPanel() {
+        if (!historyLog[currentStepIndex]) return;
+        const d = historyLog[currentStepIndex];
+        document.getElementById('disp-t').innerText = d.t;
+        document.getElementById('disp-k').innerText = d.k.toFixed(4);
+        document.getElementById('disp-x-est').innerText = d.x_est.toFixed(2);
+        document.getElementById('disp-z').innerText = d.z.toFixed(2);
+        document.getElementById('disp-x-new').innerText = d.x_new.toFixed(2);
+        document.getElementById('disp-p-est').innerText = d.p_est.toFixed(2);
+        document.getElementById('disp-p-new').innerText = d.p_new.toFixed(2);
+    }
+</script>
+</body>
+</html>
